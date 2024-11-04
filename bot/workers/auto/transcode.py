@@ -2,7 +2,7 @@ from os.path import split as path_split
 from os.path import splitext as split_ext
 from shutil import copy2 as copy_file
 
-from bot import asyncio, ffmpeg_file, mux_file, pyro, tele, time
+from bot import asyncio, mux_file, pyro, tele, time
 from bot.config import conf
 from bot.others.exceptions import AlreadyDl
 from bot.startup.before import entime
@@ -14,6 +14,7 @@ from bot.utils.batch_utils import (
 )
 from bot.utils.bot_utils import enc_canceller as e_cancel
 from bot.utils.bot_utils import encode_info as einfo
+from bot.utils.bot_utils import encode_job as ejob
 from bot.utils.bot_utils import get_bqueue, get_queue, get_var, hbs
 from bot.utils.bot_utils import time_formatter as tf
 from bot.utils.db_utils import save2db
@@ -71,7 +72,7 @@ async def another(text, title, epi, sea, metadata, dl):
     return text
 
 
-async def forward_(name, out, ds, mi, f, ani, n):
+async def forward_(name, out, ds, mi, f, ani, n, pf):
     fb = conf.FBANNER
     fc = conf.FCHANNEL
     fs = conf.FSTICKER
@@ -79,7 +80,7 @@ async def forward_(name, out, ds, mi, f, ani, n):
         return
     try:
         pic_id, f_msg = await f_post(
-            name, out, ani, conf.FCODEC, mi, _filter=f, evt=fb, direct=n
+            name, out, ani, conf.FCODEC, mi, _filter=f, evt=fb, direct=n, p_file=pf
         )
         if pic_id:
             await pyro.send_photo(photo=pic_id, caption=f_msg, chat_id=fc)
@@ -118,6 +119,10 @@ async def forward_(name, out, ds, mi, f, ani, n):
 
 
 def skip(queue_id):
+    ejob.busy = True
+    ejob.done()
+    if ejob.pending():
+        return
     if einfo.batch:
         return
     bqueue = get_bqueue()
@@ -161,6 +166,7 @@ async def thing():
         v, f, m, n, au = v_f
         ani = au[0]
         einfo.uri = au[1]
+        param_file = ejob.pending()
         sender_id, message = u_msg
         if not message:
             message = await pyro.get_messages(chat_id, msg_id)
@@ -191,7 +197,7 @@ async def thing():
             chat_id, msg_p.id, "`Waiting for download handler…`"
         )
 
-        _id = f"{msg_t.chat_id}:{msg_t.id}"
+        ejob.id = _id = f"{msg_t.chat_id}:{msg_t.id}"
         if not sender_id or str(sender_id).startswith("-100"):
             sender_id = 777000
         sender = await pyro.get_users(sender_id)
@@ -251,6 +257,8 @@ async def thing():
             einfo.cached_dl = True
             msg_r = await reply_message(msg_p, "`Waiting for caching to complete.`")
             sdt = time.time()
+            download = ejob.prev_dl_client
+            dl = download.path if download else dl
             rslt = await get_cached(dl, sender, sender_id, msg_t, op)
             await msg_r.delete()
             if rslt is False:
@@ -281,6 +289,7 @@ async def thing():
             folder=d_folder,
             _filter=f,
             direct=n,
+            p_file=param_file,
         )
         out = f"{_dir}/{file_name}"
         title, epi, sn, rlsgrp = await dynamicthumb(
@@ -298,9 +307,12 @@ async def thing():
             await msg_p.reply("#" + c_n) if log_channel == chat_id else None
         if einfo.uri and conf.DUMP_LEECH is True:
             asyncio.create_task(dumpdl(dl, name, thumb2, msg_t.chat_id, message))
-        if len(queue) > 1 and conf.CACHE_DL and not einfo.batch:
+        if ejob.jobs() > 1:
+            await cache_dl(cached=True)
+            ejob.prev_dl_client = download
+        elif len(queue) > 1 and conf.CACHE_DL and not einfo.batch:
             await cache_dl()
-        with open(ffmpeg_file, "r") as file:
+        with open(param_file, "r") as file:
             nani = file.read().rstrip()
         ffmpeg = await another(nani, title, epi, sn, metadata_name, dl)
 
@@ -325,8 +337,6 @@ async def thing():
             exe_prefix=ffmpeg.split(maxsplit=1)[0],
         )
         if encode.process.returncode != 0:
-            if download:
-                await download.clean_download()
             s_remove(out)
             skip(queue_id)
             mark_file_as_done(einfo.select, queue_id)
@@ -356,6 +366,7 @@ async def thing():
                 folder=o_fold,
                 _filter=f,
                 direct=n,
+                p_file=param_file,
             )
             out = f"{_dir}/{file_name}"
             smt = time.time()
@@ -377,8 +388,6 @@ async def thing():
                 log_msg=op,
             )
             if encode.process.returncode != 0:
-                if download:
-                    await download.clean_download()
                 s_remove(out, _out)
                 skip(queue_id)
                 mark_file_as_done(einfo.select, queue_id)
@@ -395,7 +404,14 @@ async def thing():
         sut = time.time()
         fname = path_split(out)[1]
         pcap = await custcap(
-            name, fname, anilist=ani, ver=v, encoder=conf.ENCODER, _filter=f, direct=n
+            name,
+            fname,
+            anilist=ani,
+            ver=v,
+            encoder=conf.ENCODER,
+            _filter=f,
+            direct=n,
+            p_file=param_file,
         )
         await op.edit(f"`Uploading…` `{out}`") if op else None
         upload = uploader(sender_id, _id)
@@ -414,9 +430,7 @@ async def thing():
             mark_file_as_done(einfo.select, queue_id)
             await save2db()
             await save2db("batches")
-            if download:
-                await download.clean_download()
-            s_remove(thumb2, dl, out)
+            s_remove(thumb2, out)
             return
         eut = time.time()
         utime = tf(eut - sut)
@@ -433,7 +447,9 @@ async def thing():
 
         text = str()
         mi = await info(dl)
-        forward_task = asyncio.create_task(forward_(name, out, up, mi, f, ani, n))
+        forward_task = asyncio.create_task(
+            forward_(name, out, up, mi, f, ani, n, param_file)
+        )
 
         text += f"**Source:** `[{rlsgrp}]`"
         if mi:
@@ -462,9 +478,7 @@ async def thing():
         await save2db()
         await save2db("batches")
         s_remove(thumb2)
-        if download:
-            await download.clean_download()
-        s_remove(dl, out)
+        s_remove(out)
 
     except Exception:
         await logger(Exception)
@@ -478,4 +492,9 @@ async def thing():
 
     finally:
         einfo.reset()
+        if not ejob.pending():
+            ejob.reset(force=True)
+            if download:
+                if not (download.is_cancelled or download.download_error):
+                    await download.clean_download()
         await asyncio.sleep(5)

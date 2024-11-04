@@ -13,6 +13,10 @@ from bot import (
     asyncio,
     caption_file,
     dt,
+    ffmpeg_file,
+    ffmpeg_file2,
+    ffmpeg_file3,
+    ffmpeg_file4,
     filter_file,
     itertools,
     tele,
@@ -147,6 +151,78 @@ class Encode_info:
 
 
 encode_info = Encode_info()
+
+
+class Encode_job:
+    def __init__(self):
+        self.reset(force=True)
+
+    class Jobs:
+        def __init__(self):
+            self.f1 = True
+            self.f2 = Path(ffmpeg_file2).is_file()
+            self.f3 = Path(ffmpeg_file3).is_file()
+            self.f4 = Path(ffmpeg_file4).is_file()
+
+    def jobs(self, list=False):
+        job = []
+        for x in (self.ins.f1, self.ins.f2, self.ins.f3, self.ins.f4):
+            job.append(x) if x else None
+        if list:
+            return job
+        return len(job)
+
+    def done(self):
+        if self.ins.f1:
+            self.ins.f1 = None
+        elif self.ins.f2:
+            self.ins.f2 = None
+        elif self.ins.f3:
+            self.ins.f3 = None
+        elif self.ins.f4:
+            self.ins.f4 = None
+
+    def get_pending_index(self):
+        if self.ins.f1:
+            return 1
+        elif self.ins.f2:
+            return 2
+        elif self.ins.f3:
+            return 3
+        elif self.ins.f4:
+            return 4
+
+    def get_pending_pos(self):
+        if self.ins.f1:
+            return
+        elif self.ins.f2:
+            return "2nd"
+        elif self.ins.f3:
+            return "3rd"
+        elif self.ins.f4:
+            return "4th"
+
+    def pending(self):
+        if self.ins.f1:
+            return ffmpeg_file
+        elif self.ins.f2:
+            return ffmpeg_file2
+        elif self.ins.f3:
+            return ffmpeg_file3
+        elif self.ins.f4:
+            return ffmpeg_file4
+
+    def reset(self, force=False):
+        if not force and self.busy:
+            return
+        self.ins = self.Jobs()
+        self.busy = False
+        self.id = None
+        self.prev_dl_client = None
+
+
+encode_job = Encode_job()
+
 
 sdict = dict()
 sdict.update(
@@ -540,15 +616,16 @@ async def crc32(filename: str, chunksize=65536):
         return "%X" % (checksum & 0xFFFFFFFF)
 
 
-async def get_codec():
+async def get_codec(file="ffmpeg.txt"):
     """Get file codec from ffmpeg encoding parameters"""
-    with open("ffmpeg.txt", "r") as file:
+    with open(file, "r") as file:
         ff_code = file.read().rstrip()
         file.close()
     s_check = dict()
     __out = ""
     s_check.update(
         {
+            "360": "360p",
             "480": "480p",
             "720": "720p",
             "1080": "1080p",
